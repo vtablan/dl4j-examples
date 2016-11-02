@@ -1,13 +1,18 @@
 package org.deeplearning4j.examples.nlp.cnntextclassification;
 
 import org.deeplearning4j.berkeley.Pair;
+import org.deeplearning4j.models.embeddings.inmemory.InMemoryLookupTable;
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer;
 import org.deeplearning4j.models.embeddings.wordvectors.WordVectors;
+import org.deeplearning4j.models.word2vec.VocabWord;
+import org.deeplearning4j.models.word2vec.Word2Vec;
+import org.deeplearning4j.models.word2vec.wordstore.VocabCache;
 import org.deeplearning4j.nn.api.OptimizationAlgorithm;
 import org.deeplearning4j.nn.conf.ComputationGraphConfiguration;
 import org.deeplearning4j.nn.conf.InputPreProcessor;
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration;
 import org.deeplearning4j.nn.conf.Updater;
+import org.deeplearning4j.nn.conf.distribution.Distributions;
 import org.deeplearning4j.nn.conf.graph.MergeVertex;
 import org.deeplearning4j.nn.conf.graph.PreprocessorVertex;
 import org.deeplearning4j.nn.conf.layers.*;
@@ -23,13 +28,12 @@ import org.deeplearning4j.text.tokenization.tokenizer.Tokenizer;
 import org.deeplearning4j.text.tokenization.tokenizerfactory.DefaultTokenizerFactory;
 import org.deeplearning4j.text.tokenization.tokenizerfactory.TokenizerFactory;
 import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.api.rng.distribution.impl.UniformDistribution;
 import org.nd4j.linalg.dataset.api.DataSet;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -45,25 +49,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author vtablan 2016/10/31
  */
 public class CNNTextClassifier {
-
-    protected static class InertPreprocessorVertexConf extends PreprocessorVertex {
-        private final InputPreProcessor preProcessor;
-
-        public InertPreprocessorVertexConf(InputPreProcessor preProcessor) {
-            super(preProcessor);
-            this.preProcessor = preProcessor;
-        }
-
-        @Override
-        public GraphVertex instantiate(ComputationGraph graph, String name, int idx, INDArray paramsView, boolean initializeParams) {
-            return new org.deeplearning4j.nn.graph.vertex.impl.PreprocessorVertex(graph, name, idx, preProcessor) {
-                @Override
-                public Pair<Gradient, INDArray[]> doBackward(boolean tbptt) {
-                    return new Pair<>(null, null);
-                }
-            };
-        }
-    }
 
     /**
      * A text classification instance: the text, and the class (encoded as a one-hot binary vector).
@@ -215,13 +200,6 @@ public class CNNTextClassifier {
             .setOutputs(outputLayerName); // output shape is [batchSize, numClasses]
 
         // input shape before embedding layer is [batchSize, docLength]
-        // embedding layer expects a column vector of [exampleCount, 1], where each example is 1 word.
-        String reshapedForEmbeddingName = "ReshapedForEmbedding";
-
-        graphConfBuilder.addVertex(reshapedForEmbeddingName,
-            new InertPreprocessorVertexConf(new ReshapePreProcessor(new int[]{batchSize, docLength}, new int[]{batchSize * docLength, 1}, false)),
-//            new PreprocessorVertex(new ReshapePreProcessor(new int[]{batchSize, docLength}, new int[]{batchSize * docLength, 1}, false)),
-            inputLayerName);
 
         // embedding layer
         String embeddedName = "Embedded";
@@ -233,7 +211,7 @@ public class CNNTextClassifier {
             .name(embeddedName)
             .updater(Updater.NONE)  //fixed embeddings
             .build();
-        graphConfBuilder.addLayer(embeddedName, embeddingLayerConf, reshapedForEmbeddingName);
+        graphConfBuilder.addLayer(embeddedName, embeddingLayerConf, inputLayerName);
         // data shape now: [batchSize * docLength, embDim]
 
         // CNN layer expects an image, i.e. a 4 order tensor of shape [batchSize, channels, height, width]
@@ -323,8 +301,55 @@ public class CNNTextClassifier {
         return computationGraph;
     }
 
+    /**
+     * Loads some word embeddings from a local file, and makes sure a representation is available for unknown words.
+     *
+     * @param embeddingsFile
+     * @return
+     */
+    private static WordVectors loadEmbeddingsWithUnk(File embeddingsFile) throws FileNotFoundException, UnsupportedEncodingException {
+        Pair<InMemoryLookupTable, VocabCache> embsData = WordVectorSerializer.loadTxt(embeddingsFile);
+        InMemoryLookupTable lookupTable = embsData.getFirst();
+        VocabCache vocab = embsData.getSecond();
+
+        if (!vocab.hasToken(Word2Vec.DEFAULT_UNK)) {
+            // add a representation for unknown words
+            VocabWord unkToken = new VocabWord(1.0, Word2Vec.DEFAULT_UNK);
+            vocab.addToken(unkToken);
+            vocab.addWordToIndex(vocab.numWords() - 1, Word2Vec.DEFAULT_UNK);
+            // append a random small vector to the lookup table
+            INDArray unkVector = Nd4j.rand(new int[]{1, lookupTable.layerSize()}, new UniformDistribution(1e-5, 1e-3));
+            INDArray newSyn0 = Nd4j.concat(0, lookupTable.getSyn0(), unkVector);
+            lookupTable.setSyn0(newSyn0);
+        }
+        WordVectors embeddings = WordVectorSerializer.fromTableAndVocab(lookupTable, vocab);
+        embeddings.setUNK(Word2Vec.DEFAULT_UNK);
+        return embeddings;
+    }
+
+    private static DataSet asDataset(List<Example> batch, WordVectors embeddings, int maxDocLength, int numClasses) {
+        INDArray features = Nd4j.create(new int[]{batch.size(), maxDocLength, 1});
+        float[][] labelsData = new float[batch.size()][numClasses];
+
+        for (int exampleIdx = 0; exampleIdx < batch.size(); exampleIdx++) {
+            Example example = batch.get(exampleIdx);
+            for (int wordIdx = 0; wordIdx < example.words.size(); wordIdx++) {
+                String word = example.words.get(wordIdx);
+                if (!embeddings.hasWord(word)) {
+                    word = embeddings.getUNK();
+                }
+                features.putScalar(exampleIdx, wordIdx, 0, (float) embeddings.indexOf(word));
+            }
+            System.arraycopy(example.classOneHot, 0, labelsData[exampleIdx], 0, numClasses);
+        }
+
+        return new org.nd4j.linalg.dataset.DataSet(features, Nd4j.create(labelsData));
+    }
+
+
     public static void main(String[] args) throws Exception {
-        WordVectors embeddings = WordVectorSerializer.loadTxtVectors(new File(args[0]));
+        WordVectors embeddings = loadEmbeddingsWithUnk(new File(args[0]));
+
         List<Example> data = loadData();
         int maxDocLength = 0;
         for (Example example : data) {
@@ -348,21 +373,5 @@ public class CNNTextClassifier {
 
     }
 
-    private static DataSet asDataset(List<Example> batch, WordVectors embeddings, int maxDocLength, int numClasses) {
-        float[][] featuresData = new float[batch.size()][maxDocLength];
-        float[][] labelsData = new float[batch.size()][numClasses];
 
-        for (int exampleIdx = 0; exampleIdx < batch.size(); exampleIdx++) {
-            Example example = batch.get(exampleIdx);
-            for (int wordIdx = 0; wordIdx < example.words.size(); wordIdx++) {
-                String word = example.words.get(wordIdx);
-                if (!embeddings.hasWord(word)) {
-                    word = embeddings.getUNK();
-                }
-                featuresData[exampleIdx][wordIdx] = embeddings.indexOf(word);
-            }
-            System.arraycopy(example.classOneHot, 0, labelsData[exampleIdx], 0, numClasses);
-        }
-        return new org.nd4j.linalg.dataset.DataSet(Nd4j.create(featuresData), Nd4j.create(labelsData));
-    }
 }
