@@ -1,5 +1,6 @@
 package org.deeplearning4j.examples.nlp.cnntextclassification;
 
+import org.apache.log4j.spi.LoggerFactory;
 import org.deeplearning4j.berkeley.Pair;
 import org.deeplearning4j.models.embeddings.inmemory.InMemoryLookupTable;
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer;
@@ -32,6 +33,7 @@ import org.nd4j.linalg.api.rng.distribution.impl.UniformDistribution;
 import org.nd4j.linalg.dataset.api.DataSet;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
+import org.slf4j.Logger;
 
 import java.io.*;
 import java.util.ArrayList;
@@ -49,6 +51,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author vtablan 2016/10/31
  */
 public class CNNTextClassifier {
+
+    private static final Logger logger = org.slf4j.LoggerFactory.getLogger(CNNTextClassifier.class);
 
     /**
      * A text classification instance: the text, and the class (encoded as a one-hot binary vector).
@@ -105,20 +109,14 @@ public class CNNTextClassifier {
      * <th>Purpose</th>
      * </tr>
      * <tr>
-     * <td>Reshape</td>
-     * <td>[batchSize, docLength]</td>
-     * <td>[batchSize * docLength, 1]</td>
-     * <td>Prepare input for embedding lookup</td>
-     * </tr>
-     * <tr>
      * <td>Embedding</td>
-     * <td>[batchSize * docLength, 1]</td>
-     * <td>[batchSize * docLength, embDim]</td>
+     * <td>[batchSize, docLength, 1]</td>
+     * <td>[batchSize, docLength, embDim]</td>
      * <td>Convert word IDs into dense word vectors</td>
      * </tr>
      * <tr>
      * <td>Reshape</td>
-     * <td>[batchSize * docLength, embDim]</td>
+     * <td>[batchSize, docLength, embDim]</td>
      * <td>[batchSize, 1, docLength, embDim]</td>
      * <td>Turn embedded word sequence into 1-channel rectangular input for convolutions</td>
      * </tr>
@@ -212,12 +210,12 @@ public class CNNTextClassifier {
             .updater(Updater.NONE)  //fixed embeddings
             .build();
         graphConfBuilder.addLayer(embeddedName, embeddingLayerConf, inputLayerName);
-        // data shape now: [batchSize * docLength, embDim]
+        // data shape now: [batchSize, docLength, embDim]
 
         // CNN layer expects an image, i.e. a 4 order tensor of shape [batchSize, channels, height, width]
         String reshapedForConv = "ReshapedForConv";
         graphConfBuilder.addVertex(reshapedForConv, new PreprocessorVertex(
-            new ReshapePreProcessor(new int[]{batchSize * docLength, embeddingsDim}, new int[]{batchSize, 1, docLength, embeddingsDim}, false)
+            new ReshapePreProcessor(new int[]{batchSize, docLength, embeddingsDim}, new int[]{batchSize, 1, docLength, embeddingsDim}, false)
         ), embeddedName);
         // data shape now: [batchSize, 1, doclength, embsDim], interpreted as ~[batchSize, channels, height, width]
 
@@ -348,20 +346,26 @@ public class CNNTextClassifier {
 
 
     public static void main(String[] args) throws Exception {
+        logger.info("Loading word embeddings");
         WordVectors embeddings = loadEmbeddingsWithUnk(new File(args[0]));
 
+        logger.info("Loading data");
         List<Example> data = loadData();
         int maxDocLength = 0;
         for (Example example : data) {
             if (example.words.size() > maxDocLength) maxDocLength = example.words.size();
         }
-        ComputationGraph computationGraph = makeGraphModel(BATCH_SIZE, 100, maxDocLength, 2, embeddings);
+        logger.info("Constructing computation graph");
+        ComputationGraph computationGraph = makeGraphModel(BATCH_SIZE, 1, maxDocLength, 2, embeddings);
 
         int split = (int) Math.floor(data.size() * 0.8);
         // round up to multiple of batch size
         split += split % BATCH_SIZE;
         List<Example> trainingData = data.subList(0, split);
         List<Example> testData = data.subList(split, data.size());
+
+        logger.info("Fitting the model");
+
         AtomicInteger globalStep = new AtomicInteger(0);
         while (globalStep.get() < trainingData.size() / BATCH_SIZE) {
             System.out.println("Step " + globalStep.get());
@@ -369,9 +373,5 @@ public class CNNTextClassifier {
             List<Example> batch = trainingData.subList(batchStart, batchStart + BATCH_SIZE);
             computationGraph.fit(asDataset(batch, embeddings, maxDocLength, 2));
         }
-
-
     }
-
-
 }
