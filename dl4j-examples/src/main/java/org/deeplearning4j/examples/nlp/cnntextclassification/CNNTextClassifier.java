@@ -1,6 +1,5 @@
 package org.deeplearning4j.examples.nlp.cnntextclassification;
 
-import org.apache.log4j.spi.LoggerFactory;
 import org.deeplearning4j.berkeley.Pair;
 import org.deeplearning4j.models.embeddings.inmemory.InMemoryLookupTable;
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer;
@@ -10,24 +9,21 @@ import org.deeplearning4j.models.word2vec.Word2Vec;
 import org.deeplearning4j.models.word2vec.wordstore.VocabCache;
 import org.deeplearning4j.nn.api.OptimizationAlgorithm;
 import org.deeplearning4j.nn.conf.ComputationGraphConfiguration;
-import org.deeplearning4j.nn.conf.InputPreProcessor;
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration;
 import org.deeplearning4j.nn.conf.Updater;
-import org.deeplearning4j.nn.conf.distribution.Distributions;
 import org.deeplearning4j.nn.conf.graph.MergeVertex;
 import org.deeplearning4j.nn.conf.graph.PreprocessorVertex;
 import org.deeplearning4j.nn.conf.layers.*;
 import org.deeplearning4j.nn.conf.preprocessor.CnnToFeedForwardPreProcessor;
 import org.deeplearning4j.nn.conf.preprocessor.ReshapePreProcessor;
-import org.deeplearning4j.nn.gradient.Gradient;
 import org.deeplearning4j.nn.graph.ComputationGraph;
-import org.deeplearning4j.nn.graph.vertex.GraphVertex;
 import org.deeplearning4j.nn.params.DefaultParamInitializer;
 import org.deeplearning4j.text.sentenceiterator.SentenceIterator;
 import org.deeplearning4j.text.sentenceiterator.StreamLineIterator;
 import org.deeplearning4j.text.tokenization.tokenizer.Tokenizer;
 import org.deeplearning4j.text.tokenization.tokenizerfactory.DefaultTokenizerFactory;
 import org.deeplearning4j.text.tokenization.tokenizerfactory.TokenizerFactory;
+import org.nd4j.jita.conf.CudaEnvironment;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.api.rng.distribution.impl.UniformDistribution;
 import org.nd4j.linalg.dataset.api.DataSet;
@@ -72,7 +68,7 @@ public class CNNTextClassifier {
     public static final String POSITIVES = "/cnntextclassification/rt-polarity.pos.txt";
     protected static long SEED = 42;
 
-    protected static int BATCH_SIZE = 16;
+    protected static int BATCH_SIZE = 4;
 
     protected static int[] FILTER_SIZES = new int[]{1, 2, 3};
 
@@ -346,6 +342,7 @@ public class CNNTextClassifier {
 
 
     public static void main(String[] args) throws Exception {
+        CudaEnvironment.getInstance().getConfiguration().enableDebug(true);
         logger.info("Loading word embeddings");
         WordVectors embeddings = loadEmbeddingsWithUnk(new File(args[0]));
 
