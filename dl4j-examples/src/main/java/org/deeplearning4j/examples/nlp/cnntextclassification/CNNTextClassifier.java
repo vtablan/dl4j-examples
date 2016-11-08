@@ -16,6 +16,7 @@ import org.deeplearning4j.nn.conf.graph.PreprocessorVertex;
 import org.deeplearning4j.nn.conf.layers.*;
 import org.deeplearning4j.nn.conf.preprocessor.CnnToFeedForwardPreProcessor;
 import org.deeplearning4j.nn.conf.preprocessor.ReshapePreProcessor;
+import org.deeplearning4j.nn.conf.preprocessor.RnnToFeedForwardPreProcessor;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.params.DefaultParamInitializer;
 import org.deeplearning4j.text.sentenceiterator.SentenceIterator;
@@ -190,10 +191,15 @@ public class CNNTextClassifier {
             .graphBuilder()
             .pretrain(false)
             .backprop(true)
-            .addInputs(inputLayerName) // input shape is [batchSize, docLength]
+            .addInputs(inputLayerName)
             .setOutputs(outputLayerName); // output shape is [batchSize, numClasses]
 
-        // input shape before embedding layer is [batchSize, docLength]
+        // input shape before embedding layer is [batchSize, 1, docLength]
+        String reshapedForEmbName = "ReshapedForEmbedding";
+        graphConfBuilder.addVertex(reshapedForEmbName,
+            new PreprocessorVertex(new RnnToFeedForwardPreProcessor()),
+            inputLayerName);
+        // data shape now: [batchSize * docLength, 1]
 
         // embedding layer
         String embeddedName = "Embedded";
@@ -205,15 +211,15 @@ public class CNNTextClassifier {
             .name(embeddedName)
             .updater(Updater.NONE)  //fixed embeddings
             .build();
-        graphConfBuilder.addLayer(embeddedName, embeddingLayerConf, inputLayerName);
-        // data shape now: [batchSize, docLength, embDim]
-
-        // CNN layer expects an image, i.e. a 4 order tensor of shape [batchSize, channels, height, width]
-        String reshapedForConv = "ReshapedForConv";
-        graphConfBuilder.addVertex(reshapedForConv, new PreprocessorVertex(
-            new ReshapePreProcessor(new int[]{batchSize, docLength, embeddingsDim}, new int[]{batchSize, 1, docLength, embeddingsDim}, false)
-        ), embeddedName);
-        // data shape now: [batchSize, 1, doclength, embsDim], interpreted as ~[batchSize, channels, height, width]
+        graphConfBuilder.addLayer(embeddedName, embeddingLayerConf, reshapedForEmbName);
+        // data shape now: [batchSize * docLength, embDim]
+        String reshapedForConvName = "ReshapedForConvolutions";
+        graphConfBuilder.addVertex(reshapedForConvName,
+            new PreprocessorVertex(new ReshapePreProcessor(
+                new int[] {batchSize * docLength, embeddingsDim},
+                new int[]{batchSize, 1, docLength, embeddingsDim})),
+            embeddedName);
+        // data shape now: [batchSize, 1, docLength, embDim], interpreted as ~[batchSize, channels, height, width]
 
         // we will apply a series of convolutions, after which we'll concatenate the outputs
         // here we store the names of the outputs to concatenate
@@ -231,7 +237,7 @@ public class CNNTextClassifier {
                 .activation("relu")
                 .name(convLayerName)
                 .build();
-            graphConfBuilder.addLayer(convLayerName, convolutionLayerConf, reshapedForConv);
+            graphConfBuilder.addLayer(convLayerName, convolutionLayerConf, reshapedForConvName);
             int convolvedRows = docLength - filterSize + 1;
             // data shape now: [batchSize, filterCount, convolvedRows, 1]
 
@@ -250,7 +256,6 @@ public class CNNTextClassifier {
 
             graphConfBuilder.addVertex(postPoolReshaperName, new PreprocessorVertex(
                 new CnnToFeedForwardPreProcessor(1, 1, filtersCount)
-                //new ReshapePreProcessor(new int[]{batchSize, filtersCount, 1, 1}, new int[]{batchSize, filtersCount}, false)
             ), poolLayerName);
             // data shape now: [batchSize, filtersCount]
             cnnOutputsToMerge.add(postPoolReshaperName);
@@ -322,7 +327,7 @@ public class CNNTextClassifier {
     }
 
     private static DataSet asDataset(List<Example> batch, WordVectors embeddings, int maxDocLength, int numClasses) {
-        INDArray features = Nd4j.create(new int[]{batch.size(), maxDocLength, 1});
+        INDArray features = Nd4j.create(new int[]{batch.size(),1, maxDocLength});
         float[][] labelsData = new float[batch.size()][numClasses];
 
         for (int exampleIdx = 0; exampleIdx < batch.size(); exampleIdx++) {
@@ -332,7 +337,7 @@ public class CNNTextClassifier {
                 if (!embeddings.hasWord(word)) {
                     word = embeddings.getUNK();
                 }
-                features.putScalar(exampleIdx, wordIdx, 0, (float) embeddings.indexOf(word));
+                features.putScalar(exampleIdx, 0, wordIdx, (float) embeddings.indexOf(word));
             }
             System.arraycopy(example.classOneHot, 0, labelsData[exampleIdx], 0, numClasses);
         }
@@ -357,7 +362,7 @@ public class CNNTextClassifier {
 
         int split = (int) Math.floor(data.size() * 0.8);
         // round up to multiple of batch size
-        split += split % BATCH_SIZE;
+        split -= split % BATCH_SIZE;
         List<Example> trainingData = data.subList(0, split);
         List<Example> testData = data.subList(split, data.size());
 
