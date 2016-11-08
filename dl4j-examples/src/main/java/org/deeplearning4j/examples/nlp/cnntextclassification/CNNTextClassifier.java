@@ -24,7 +24,7 @@ import org.deeplearning4j.text.sentenceiterator.StreamLineIterator;
 import org.deeplearning4j.text.tokenization.tokenizer.Tokenizer;
 import org.deeplearning4j.text.tokenization.tokenizerfactory.DefaultTokenizerFactory;
 import org.deeplearning4j.text.tokenization.tokenizerfactory.TokenizerFactory;
-import org.nd4j.jita.conf.CudaEnvironment;
+//import org.nd4j.jita.conf.CudaEnvironment;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.api.rng.distribution.impl.UniformDistribution;
 import org.nd4j.linalg.dataset.api.DataSet;
@@ -106,14 +106,20 @@ public class CNNTextClassifier {
      * <th>Purpose</th>
      * </tr>
      * <tr>
+     * <td>RnnToFeedforwardPreprocessor</td>
+     * <td>[batchSize, 1, docLength]</td>
+     * <td>[batchSize * docLength, 1]</td>
+     * <td>Turn time series data (each example is a sequence of tokens) into a longer batch of simple examples (each example is a token).</td>
+     * </tr>*
+     * <tr>
      * <td>Embedding</td>
-     * <td>[batchSize, docLength, 1]</td>
-     * <td>[batchSize, docLength, embDim]</td>
+     * <td>[batchSize * docLength, 1]</td>
+     * <td>[batchSize * docLength, embDim]</td>
      * <td>Convert word IDs into dense word vectors</td>
      * </tr>
      * <tr>
      * <td>Reshape</td>
-     * <td>[batchSize, docLength, embDim]</td>
+     * <td>[batchSize * docLength, embDim]</td>
      * <td>[batchSize, 1, docLength, embDim]</td>
      * <td>Turn embedded word sequence into 1-channel rectangular input for convolutions</td>
      * </tr>
@@ -347,7 +353,7 @@ public class CNNTextClassifier {
 
 
     public static void main(String[] args) throws Exception {
-        CudaEnvironment.getInstance().getConfiguration().enableDebug(true);
+//        CudaEnvironment.getInstance().getConfiguration().enableDebug(true);
         logger.info("Loading word embeddings");
         WordVectors embeddings = loadEmbeddingsWithUnk(new File(args[0]));
 
